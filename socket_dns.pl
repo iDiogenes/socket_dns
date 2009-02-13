@@ -1,14 +1,17 @@
 #!/usr/bin/perl -w
 #
-# socket_dns.pl v0.1 (JD Trout)
+# socket_dns.pl v1.0 (JD Trout)
 #
 # This script should do the following:
 #
-#  1. Check to see if SSH port is up on specified servers.
+#  1. Check to see if the specified port is up on the specified servers.
 #
-#  2. Make sure DNS reflects the hosts who are up.              
+#  2. Make sure DNS reflects the sockets that are up.              
+#   2a. Run a safety check to make sure not to remove all DNS entries.
+#	
+#  3. Email administrator on all major errors.
+#   3a. Need to remove email address from code.
 #
-#  3. Email administrator if host is no longer in DNS.
 use Net::DNS;
 use IO::Socket;
 use strict;
@@ -146,25 +149,29 @@ sub dns_check {
   #Defining necessary variables
   my $ip = shift;
   my $res = new Net::DNS::Resolver;
+  my @ips;
   #Query the name server for the hostname.
   if (my $query = $res->query($config{'query_hostname'})) {
     foreach $_ ($query->answer) {
-      next unless $_->type eq "A";
-      my $address = $_->address;
-        if ($address eq $ip) {
-          return 1;
-			    print "Query return of IP is: $ip \n" if $debug;
-        }
-        else {
-          print "Query IP $ip is not matching $address \n" if $debug;
-        }  
+      	next unless $_->type eq "A";
+      	my $address = $_->address;
+	push(@ips, $address); 
     }
-
-  }
-
+	#Match IP
+	my @match = grep(/$ip/i, @ips);
+        if ($match[0] eq $ip) {
+        	return 1;
+	}
+	else {
+		&write_log ("$ip is no longer in DNS.");
+		print "$ip is no longer in DNS. \n" if $debug; 	
+		return 0;
+	}
+  }	
   else {
     &write_log ("$ip is no longer in DNS, or socket_dns.pl can no longer query DNS.");
-	  &email ("$ip is no longer in DNS, or socket_dns.pl can no longer query DNS.");
+    print "$ip is no longer in DNS, or socket_dns.pl can no longer query DNS. \n" if $debug;
+	return 0;
   }
 }
 
@@ -176,37 +183,37 @@ sub dns_add {
   my $ip = shift;
   my $res = new Net::DNS::Resolver;
   my $update = new Net::DNS::Update($config{'dns_zone'});
-  my $key_name = $config{'dns_key_name'};
-  my $key = $config{'dns_key'};            
+  my $key_name = "$config{'dns_key_name'}";
+  my $key = "$config{'dns_key'}";            
+
   my $tsig = Net::DNS::RR->new("$key_name TSIG $key");
   $tsig->fudge(60);
-
+  
   # Write update to log
-  &write_log("Adding host $config{'query_hostname'} with IP $ip to DNS");  #Throwing error
+  &write_log("Adding host $config{'query_hostname'} with IP $ip to DNS"); 
 
   #Add the A record 
   $update->push(update => rr_add("$config{'query_hostname'} 180 A $ip"));
   $update->sign_tsig($tsig);
   $res->nameservers($config{'dns_servers'});
   my $ans = $res->send($update);
-   
   # Check to make sure record was added.
   if (defined $ans) {
 	  if ($ans->header->rcode eq "NOERROR") {
-      &write_log("$ip  added successfully to DNS.");
-    }
+     	 &write_log("Added $ip successfully to DNS.");
+      }
 	  else {
-      &write_log("Return code: '$ans->header->rcode'");
-      &write_log( "Failed to add $ip to DNS.");
-      &email("Failed to add  $ip to DNS. \n Return code: '$ans->header->rcode'");
-    }
+      	print "Return code:", $ans->header->rcode if $debug;
+      	&write_log( "Failed to add $ip to DNS.  Please run again in debug.");
+      	&email("Failed to add  $ip to DNS. \n Return code: '$ans->header->rcode'");
+	  }
   }
   else {
     &write_log("Error: '$res->errorstring'");
     &write_log("Failed to add $ip to DNS.");
-	  &email("Failed to add  $ip to DNS. \n 
+	&email("Failed to add  $ip to DNS. \n 
             Error: $res->errorstring \n");	
-    print "Error $res->errorstring \n when trying to DNS record for IP $ip" if $debug;
+    print "Error $res->errorstring \n when trying to DNS record for IP $ip \n" if $debug;
   }
 }
 
@@ -224,7 +231,7 @@ sub dns_del {
 
   # Write update to log
   &write_log("Removing host $config{'query_hostname'} with IP $ip from DNS");
-  print "Removing host $config{'query_hostname'} from zone $config{'dns_zone'}, with IP $ip from DNS \n";
+  print "Removing host $config{'query_hostname'} from zone $config{'dns_zone'}, with IP $ip from DNS. \n";
   
   #Remove the A record
   $update->push(update => rr_del("$config{'query_hostname'} A $ip" ));
@@ -239,9 +246,9 @@ sub dns_del {
       print "$ip removed successfully from DNS.\n" if $debug;
     }
     else {
-      &write_log("Return code:,'$ans->header->rcode,'");
+      print "Return code:",$ans->header->rcode if $debug;
       &write_log( "Failed to remove $ip From DNS.");
-		  &email("Failed to remove  $ip from DNS. \n Return code: '$ans->header->rcode'");
+	  &email("Failed to remove  $ip from DNS. \n Return code: '$ans->header->rcode'");
       print "Failed to remove IP $ip.\n Return Code:", $ans->header->rcode, "\n" if $debug;
     }
   }
@@ -257,7 +264,7 @@ sub dns_safety_check {
 	my @query_host_ip = split(/\ /, $config{'query_host_ip'});
 	my $dns_count;
 	foreach(@query_host_ip) {
-		if (&dns_check($_) ) {
+		if (&dns_check($_) == 1) {
 			$dns_count++;
 		}
 		else {
@@ -265,7 +272,8 @@ sub dns_safety_check {
 			print "DNS Safety shows that $_ does not exists in DNS. \n" if $debug;
 		}
 	}		
-	if ($dns_count == 2) {
+	print "DNS Count is $dns_count \n" if $debug;
+	if ($dns_count >= 2) {
 		return 1;
 	}
 	else {
@@ -294,7 +302,7 @@ sub email {
   my $subject = "[loni-sys] SSH IP Mgmt issue!";
 
   #Send email
-  system("echo \"$body\" | mailx -s \"$subject\" sysadm\@sub.domain.com"); 
+  system("echo \"$body\" | mailx -s \"$subject\" sysadm\@loni.ucla.edu"); 
 }
 
 # Shutdown the daemon
@@ -328,10 +336,11 @@ sub execute {
 sub function {
   my $ports = $config{'query_ports'};	
   my @query_host_ip = split(/\ /, $config{'query_host_ip'});	
-  my $query;
 	foreach(@query_host_ip) {
 		my $sock = &socket_check($_, $ports);
-		my $query = &dns_safety_check();
+		print "my sock return is $sock \n" if $debug;
+		my $query = &dns_check($_);
+		print "my DNS return is $query \n" if $debug;
 		unless ($sock > 0) { 
 			&write_log ("Socket check for $_ failed!  Trying again in 20 seconds.");
 			print "Socket check for $_ failed!  Trying again in 20 seconds. \n" if $debug;
@@ -339,7 +348,10 @@ sub function {
 			$sock = &socket_check($_, $ports);
 		}
 		if ($query > $sock) {
+			&write_log ("Running DNS Safety check.");
+			print "Running DNS Safety check. \n" if $debug;
 			my $dns_safety = &dns_safety_check();
+			print "DNS Safety return is $dns_safety \n" if $debug;
 			while($dns_safety) {
 				&write_log ("Socket is down but DNS exists.  Removing DNS for $_.");
 				print "Socket is down but DNS exists.  Removing DNS for $_. \n" if $debug;
@@ -349,7 +361,7 @@ sub function {
 		}
 		elsif ($sock > $query) {
 			&write_log ("Socket is up but DNS does not exists.  Adding DNS for $_.");
-			print "Socket is up but DNS does not exists.  Adding DNS for $_.";
+			print "Socket is up but DNS does not exists.  Adding DNS for $_. \n" if $debug;
 			&dns_add($_);
 		}
 	}
@@ -399,6 +411,7 @@ if($daemon) {
   }
 }
 else {
-  &function(); 
+  my $interval = $config{'query_interval'};
+  &execute($interval); 
   exit;
 }
