@@ -1,0 +1,51 @@
+#!/bin/sh
+#
+# socket_dns:      This shell script enables the socket_dns daemon
+#
+# Author:       JD Trout  
+#
+# description:  This provides SSH DNS load balancing for SSH proxy servers. 
+# processname: socket_dns.pl
+# pidfile: /var/run/socket_dns.pid
+#
+# DO NOT CHANGE THESE DEFAULT VALUES HERE
+# SET THEM IN THE /etc/rc.conf FILE
+#
+# /etc/rc.conf should have
+# socket_dns_enable="YES"
+# socket_dns_flags="-d"
+#
+socket_dns_enable=${socket_dns_enable-"NO"}
+socket_dns_flags=${socket_dns_flags-""}
+socket_dns_pidfile=${socket_dns_pidfile-"/var/run/socket_dns.pid"}
+
+. /etc/rc.subr
+
+name="socket_dns"
+rcvar=`set_rcvar`
+command="/usr/local/bin/socket_dns.pl"
+load_rc_config $name
+pidfile="${socket_dns_pidfile}"
+start_cmd="socket_dns_start"
+stop_cmd="socket_dns_stop"
+status_cmd="socket_dns_status"
+
+socket_dns_start()
+{
+        echo "Starting ${name}." 
+        /usr/bin/nice -5 ${command} ${socket_dns_flags}
+}
+
+socket_dns_stop()
+{
+        echo "Stopping ${name}"
+        ${command} -s
+
+}
+
+socket_dns_status()
+{
+        echo `cat ${socket_dns_pidfile}` 
+}
+
+run_rc_command "$1"
